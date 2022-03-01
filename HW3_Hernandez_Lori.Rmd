@@ -1,0 +1,111 @@
+---
+title: "STAA 566 HW3"
+author: "Lori Hernandez"
+output: html_document
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+---
+## **Discussion**
+Continuing on my previous work with the storm data from the Storm Events Database that is created and maintained by the National Oceanic and Atmospheric Administration (NOAA), I decided to create a map of tornado activity for the year 2021. The Storm Events Database can be accessed here: [Storm Events Database](https://www.ncdc.noaa.gov/stormevents/ftp.jsp).  On the left side of the page, one can access the [NWS Documentation PDF](https://www.nws.noaa.gov/directives/sym/pd01016005curr.pdf), which provides detailed information on how this data is compiled and in-depth guidance on the terminology used.  The actual CSV file I downloaded is [here](https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/) - note that I chose to limit my mapping to the year 2021, so I utilized the "details" file for 2021. 
+
+I want the user to be able to see where tornado activity has taken place on a map of the United States, as well as have some information about each tornado available through hover-over. Fortunately, the data set from NOAA includes the latitude and longitude information for where each tornado started, so that is what I used for the map.  I want users to be able to see the tornado id for each marker, so they have the key field for finding additional information on a specific tornado if they want to.  I also decided to include damage, magnitude, length, and width information for each tornado.  Last, I wanted to add clusters to my map, because without the clustering option on, there are way too many markers on the map and it is very difficult to make sense of the spatial information.  I really liked the interactive mapping available through the leaflet package, so I decided to use that package for this project.
+
+
+## **Code and Map**
+First, I load the necessary packages for this program.
+```{r, warning = FALSE}
+library(tidyverse)
+library(leaflet)
+library(dplyr)
+library(scales)
+```
+
+Now I read in the csv file and filter it down to only include the tornado activity, as I don't want other storm information in my map.
+```{r}
+year_2021 <- read.csv("C:/Users/lhern/OneDrive/Desktop/STAA 566/StormData/StormEvents_details-ftp_v1.0_d2021_c20220124.csv.gz") %>%
+  select(YEAR, EVENT_TYPE, EVENT_ID, STATE, CZ_NAME, BEGIN_DATE_TIME, CZ_TIMEZONE, INJURIES_DIRECT, INJURIES_INDIRECT, DEATHS_DIRECT, DEATHS_INDIRECT, DAMAGE_PROPERTY, DAMAGE_CROPS, BEGIN_LAT, BEGIN_LON, TOR_F_SCALE, TOR_LENGTH, TOR_WIDTH) %>%
+  filter(EVENT_TYPE == "Tornado")
+```
+
+The csv files obtained from the NOAA have the property damage and crop damage variables as character fields, with amounts shown with K for thousands, M for millions, and B for billions.  Here I convert these two fields to numeric by identifying the presence of a K, M, or B, and multiplying the numeric portion of the string accordingly to get the right value.  Then, I replace any NA values within the full data frame with a 0.
+```{r}
+year_2021$DAMAGE_PROPERTY <- dplyr::case_when(
+  stringr::str_detect(year_2021$DAMAGE_PROPERTY, 'K') ~ readr::parse_number(year_2021$DAMAGE_PROPERTY) * 1000,
+  stringr::str_detect(year_2021$DAMAGE_PROPERTY, 'M') ~ readr::parse_number(year_2021$DAMAGE_PROPERTY) * 1000000,
+  stringr::str_detect(year_2021$DAMAGE_PROPERTY, 'B') ~ readr::parse_number(year_2021$DAMAGE_PROPERTY) * 1000000000,
+  TRUE ~ parse_number(year_2021$DAMAGE_PROPERTY)
+)
+
+year_2021$DAMAGE_CROPS <- dplyr::case_when(
+  stringr::str_detect(year_2021$DAMAGE_CROPS, 'K') ~ readr::parse_number(year_2021$DAMAGE_CROPS) * 1000,
+  stringr::str_detect(year_2021$DAMAGE_CROPS, 'M') ~ readr::parse_number(year_2021$DAMAGE_CROPS) * 1000000,
+  stringr::str_detect(year_2021$DAMAGE_CROPS, 'B') ~ readr::parse_number(year_2021$DAMAGE_CROPS) * 1000000000,
+  TRUE ~ parse_number(year_2021$DAMAGE_CROPS)
+)
+
+year_2021[is.na(year_2021)] = 0
+```
+
+The NOAA breaks down the death and injury information for each tornado by direct and indirect (defined in the NOAA's NWS Documentation); for the purposes of this visualization, I opted to combine direct and indirect deaths/injuries together, to have a total deaths and total injuries field instead.  Here I pull out the two columns for direct and indirect deaths, sum the columns for each row, and add the new total deaths column back to the data frame; I do the same thing for the injuries information.
+```{r}
+x <- year_2021 %>%
+  select(DEATHS_DIRECT, DEATHS_INDIRECT)
+combined_deaths <- mutate(x, TOTAL_DEATHS = rowSums(x)) %>%
+  select(TOTAL_DEATHS)
+year_2021 <- cbind(year_2021, combined_deaths)
+
+y <- year_2021 %>%
+  select(INJURIES_DIRECT, INJURIES_INDIRECT)
+combined_injuries <- mutate(y, TOTAL_INJURIES = rowSums(y)) %>%
+  select(TOTAL_INJURIES)
+year_2021 <- cbind(year_2021, combined_injuries)
+```
+
+To make the final product more understandable for the user, I convert the property damage and crop damage values to be formatted as currency; this way, when the property and crop damage appear in the hover-over label on the map, they will show as dollar amounts.
+```{r}
+year_2021$DAMAGE_CROPS <- dollar(year_2021$DAMAGE_CROPS)
+year_2021$DAMAGE_PROPERTY <- dollar(year_2021$DAMAGE_PROPERTY)
+```
+
+As most users won't know what the F-scale values mean, I modify the values in the data frame to include the MPH range for each F-scale.
+```{r}
+year_2021$TOR_F_SCALE = dplyr::case_when(
+  year_2021$TOR_F_SCALE == "EF0" ~ "EF0 (40-72 MPH)",
+  year_2021$TOR_F_SCALE == "EF1" ~ "EF1 (73-112 MPH)",
+  year_2021$TOR_F_SCALE == "EF2" ~ "EF2 (113-157 MPH)",
+  year_2021$TOR_F_SCALE == "EF3" ~ "EF3 (158-206 MPH)",
+  year_2021$TOR_F_SCALE == "EF4" ~ "EF4 (207-260 MPH)",
+  year_2021$TOR_F_SCALE == "EF5" ~ "EF5 (261-318 MPH)",
+  TRUE ~ "Unknown")
+
+```
+
+To have the leaflet package be able to determine the longitude and latitude of each tornado, I update the names of the columns to be LAT and LON - this will make it clear to the leaflet package what columns to use for the mapping.
+```{r}
+colnames(year_2021) <- c("YEAR", "EVENT_TYPE", "EVENT_ID", "STATE", "CZ_NAME", "BEGIN_DATE_TIME", "CZ_TIMEZONE", "INJURIES_DIRECT", "INJURIES_INDIRECT", "DEATHS_DIRECT", "DEATHS_INDIRECT", "DAMAGE_PROPERTY", "DAMAGE_CROPS", "LAT", "LON", "TOR_F_SCALE", "TOR_LENGTH", "TOR_WIDTH", "TOTAL_DEATHS", "TOTAL_INJURIES")
+```
+
+Finally, I create my map.  I define what I want included in my labels (when the user hovers over each tornado marker), then create the map using a street map tile and the previously defined labels to be the hover-over popups, and then add the cluser option to make the map easier to view.
+```{r}
+labs <- lapply(seq(nrow(year_2021)),
+               function(i) {
+                 paste0("Tornado ID: ", as.character(year_2021[i, "EVENT_ID"]), '<br>',
+                        "Begin Date and Time: ", as.character(year_2021[i, "BEGIN_DATE_TIME"]), " ", as.character(year_2021[i, "CZ_TIMEZONE"]), '<br>',
+                        "Enhanced Fujita Scale: ", as.character(year_2021[i, "TOR_F_SCALE"]), '<br>',
+                        "Tornado Length (in miles): ", as.character(year_2021[i, "TOR_LENGTH"]), '<br>',
+                        "Tornado Width (in feet): ", as.character(year_2021[i, "TOR_WIDTH"]), '<br>',
+                        "Total Deaths: ", as.character(year_2021[i, "TOTAL_DEATHS"]), '<br>',
+                        "Total Injuries: ", as.character(year_2021[i, "TOTAL_INJURIES"]), '<br>',
+                        "Property Damage: ", as.character(year_2021[i, "DAMAGE_PROPERTY"]), '<br>',
+                        "Crop Damage: ", as.character(year_2021[i, "DAMAGE_CROPS"]), '<br>')
+               })
+
+year_2021 %>% leaflet() %>%
+  addProviderTiles(providers$Esri.WorldStreetMap, group = "Street Map") %>%
+  addMarkers(label = ~lapply(labs, htmltools::HTML),
+             clusterOptions = markerClusterOptions())
+```
+
